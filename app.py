@@ -3,36 +3,36 @@ from google.oauth2.service_account import Credentials
 import pandas as pd
 import streamlit as st
 
-# Configuração da página
 st.set_page_config(
-    page_title="Dashboard de Consulta",
-    page_icon="🔍",
+    page_title="Dashboard de Consulta - Planilha Privada",
+    page_icon="📊",
     layout="wide"
 )
 
-# Escopos da API do Google
+# Escopos de permissão
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
-# --- AUTENTICAÇÃO COM GOOGLE SHEETS ---
+# --- AUTENTICAÇÃO COM A CONTA DE SERVIÇO ---
 @st.cache_resource
 def get_gspread_client():
+    # Lê as credenciais seguras vindas do st.secrets
     credentials = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"], scopes=SCOPES
     )
     return gspread.authorize(credentials)
 
-# --- FUNÇÃO PARA LISTAR AS ABAS DA PLANILHA ---
-@st.cache_data(ttl=300)  # Atualiza a lista a cada 5 minutos
+# --- FUNÇÃO PARA LISTAR TODAS AS ABAS DA PLANILHA PRIVADA ---
+@st.cache_data(ttl=300) # Cache de 5 minutos
 def list_worksheets(sheet_id):
     client = get_gspread_client()
     spreadsheet = client.open_by_key(sheet_id)
     return [ws.title for ws in spreadsheet.worksheets()]
 
 # --- FUNÇÃO PARA CARREGAR OS DADOS DA ABA SELECIONADA ---
-@st.cache_data(ttl=60)   # Atualiza os dados a cada 1 minuto
+@st.cache_data(ttl=60) # Cache de 1 minuto
 def load_sheet_data(sheet_id, sheet_name):
     client = get_gspread_client()
     worksheet = client.open_by_key(sheet_id).worksheet(sheet_name)
@@ -42,85 +42,75 @@ def load_sheet_data(sheet_id, sheet_name):
         return pd.DataFrame()
         
     df = pd.DataFrame(records)
-    # Limpa nomes de colunas (remove espaços extras)
     df.columns = [str(col).strip() for col in df.columns]
     return df
 
-# --- INTERFACE DO DASHBOARD ---
-st.title("🔍 Painel de Consulta e Leitura de Dados")
+# --- DENTRO DA APLICAÇÃO ---
+st.title("📊 Painel de Consulta de Dados")
 
 try:
-    SHEET_ID = st.secrets["NEW_SHEET_ID"]
+    # ID da nova planilha configurada nos Secrets
+    NEW_SHEET_ID = st.secrets["NEW_SHEET_ID"]
     
-    # 1. Menu Lateral - Seleção da Aba
+    # Busca todas as abas automaticamente
+    lista_abas = list_worksheets(NEW_SHEET_ID)
+    
+    # Menu Lateral para Navegação e Filtros
     st.sidebar.header("📂 Navegação")
-    lista_abas = list_worksheets(SHEET_ID)
+    aba_selecionada = st.sidebar.selectbox("Selecione a Aba:", options=lista_abas)
     
-    aba_selecionada = st.sidebar.selectbox(
-        "Selecione a Aba / Página:",
-        options=lista_abas
-    )
-    
-    # Carrega os dados da aba escolhida
-    df = load_sheet_data(SHEET_ID, aba_selecionada)
+    # Carrega dados da aba escolhida
+    df = load_sheet_data(NEW_SHEET_ID, aba_selecionada)
     
     st.sidebar.markdown("---")
     st.sidebar.header("🎯 Filtros")
     
     if df.empty:
-        st.warning("A aba selecionada está vazia ou não possui dados formatados.")
+        st.warning("A aba selecionada não possui dados.")
     else:
-        # 2. Filtro Dinâmico na Sidebar
-        # Permite ao usuário escolher por qual coluna deseja filtrar
-        colunas_disponiveis = list(df.columns)
-        coluna_filtro = st.sidebar.selectbox(
-            "Filtrar pela coluna:",
-            options=["(Nenhum filtro)"] + colunas_disponiveis
-        )
+        # Filtro dinâmico por coluna
+        colunas = list(df.columns)
+        coluna_filtro = st.sidebar.selectbox("Filtrar por coluna:", options=["(Nenhum filtro)"] + colunas)
         
         df_filtrado = df.copy()
         
         if coluna_filtro != "(Nenhum filtro)":
-            valores_unicos = sorted(list(df[coluna_filtro].astype(str).unique()))
-            valores_selecionados = st.sidebar.multiselect(
-                f"Selecione o(s) valor(es) em '{coluna_filtro}':",
-                options=valores_unicos,
-                default=valores_unicos
+            opcoes_unicas = sorted(list(df[coluna_filtro].astype(str).unique()))
+            selecionados = st.sidebar.multiselect(
+                f"Valores em '{coluna_filtro}':",
+                options=opcoes_unicas,
+                default=opcoes_unicas
             )
-            # Aplica o filtro
-            if valores_selecionados:
-                df_filtrado = df[df[coluna_filtro].astype(str).isin(valores_selecionados)]
-            else:
-                df_filtrado = pd.DataFrame(columns=df.columns)
+            df_filtrado = df[df[coluna_filtro].astype(str).isin(selecionados)]
 
-        # Campo de busca rápida por texto em toda a tabela
-        busca_texto = st.text_input("🔎 Pesquisa rápida (busca qualquer termo na tabela):")
-        if busca_texto:
+        # Pesquisa textual rápida
+        busca = st.text_input("🔎 Pesquisar termo na tabela:")
+        if busca:
             df_filtrado = df_filtrado[
                 df_filtrado.astype(str).apply(
-                    lambda row: row.str.contains(busca_texto, case=False).any(), axis=1
+                    lambda row: row.str.contains(busca, case=False).any(), axis=1
                 )
             ]
 
-        # 3. Métricas Rápidas
-        col_m1, col_m2 = st.columns(2)
-        col_m1.metric("Registros Exibidos", len(df_filtrado))
-        col_m2.metric("Total de Registros na Aba", len(df))
+        # Métricas de contagem
+        col1, col2 = st.columns(2)
+        col1.metric("Registros Filtrados", len(df_filtrado))
+        col2.metric("Total na Aba", len(df))
         
         st.markdown("---")
         
-        # 4. Exibição da Tabela
-        st.subheader(f"📋 Dados da aba: `{aba_selecionada}`")
+        # Tabela
+        st.subheader(f"📋 Exibindo: `{aba_selecionada}`")
         st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
 
-        # 5. Botão de Exportação/Download do resultado filtrado
-        csv_data = df_filtrado.to_csv(index=False).encode("utf-8")
+        # Botão para baixar CSV
+        csv = df_filtrado.to_csv(index=False).encode("utf-8")
         st.download_button(
-            label="📥 Baixar dados filtrados (CSV)",
-            data=csv_data,
-            file_name=f"consulta_{aba_selecionada}.csv",
+            label="📥 Baixar resultado em CSV",
+            data=csv,
+            file_name=f"{aba_selecionada}_filtrado.csv",
             mime="text/csv"
         )
 
 except Exception as e:
-    st.error(f"❌ Ocorreu um erro ao carregar os dados: {e}")
+    st.error(f"❌ Erro ao conectar com a planilha privada: {e}")
